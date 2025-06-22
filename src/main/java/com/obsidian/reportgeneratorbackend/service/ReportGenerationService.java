@@ -5,8 +5,14 @@ import com.obsidian.reportgeneratorbackend.dto.MappingRule;
 import com.obsidian.reportgeneratorbackend.dto.ReportGenerationRequest;
 import org.apache.poi.ss.usermodel.*; // 引入通配符以便使用CellType等
 import org.apache.poi.ss.util.CellRangeAddress; // 用于复制合并区域
-import org.apache.poi.ss.usermodel.Sheet;
-import org.apache.poi.xssf.usermodel.XSSFWorkbook;
+import org.apache.poi.xssf.usermodel.XSSFWorkbook; // 引入XSSFWorkbook
+import org.apache.poi.xssf.usermodel.XSSFDrawing; // 引入XSSFDrawing
+import org.apache.poi.xssf.usermodel.XSSFShape; // 引入XSSFShape
+import org.apache.poi.xssf.usermodel.XSSFPicture; // 引入XSSFPicture
+import org.apache.poi.xssf.usermodel.XSSFClientAnchor; // 引入XSSFClientAnchor
+import org.apache.poi.xssf.usermodel.XSSFPictureData; // 引入XSSFPictureData
+
+
 import org.springframework.stereotype.Service;
 
 import java.io.ByteArrayOutputStream;
@@ -153,6 +159,11 @@ public class ReportGenerationService {
             for (LogRecord record : request.getLogData()) {
                 // 使用 SN 作为新 Sheet 的名称，处理null值，POI会自动处理重复名称
                 String sheetName = Optional.ofNullable(record.getSn()).orElse("UnknownSN");
+                // 清理SN中的非法字符，以免POI报错
+                sheetName = sheetName.replaceAll("[\\\\/*?\\[\\]:]", "_");
+                if (sheetName.length() > 31) {
+                    sheetName = sheetName.substring(0, 31); // Sheet名称最大长度31
+                }
 
                 // 在输出Workbook中创建一个新的Sheet
                 Sheet newSheet = outputWorkbook.createSheet(sheetName);
@@ -161,7 +172,7 @@ public class ReportGenerationService {
                 copySheetContent(templateSheet, newSheet, outputWorkbook);
 
                 // *** 关键步骤：将当前日志记录的数据填充到这个新的（已复制模板结构的）Sheet中 ***
-                // 注意：这里调用的是 fillDataForRecordMultiSheet，它不应用列偏移
+                // 注意：这里调用的是 fillDataForRecordMultiSheet，它不应用记录索引的列偏移
                 fillDataForRecordMultiSheet(newSheet, request.getMappingRules(), record);
             }
 
@@ -174,16 +185,18 @@ public class ReportGenerationService {
 
     /*
      * =================================================================
-     *  ************ 辅助方法 - 复制Sheet内容 (修正版) ************
+     *  ************ 辅助方法 - 复制Sheet内容 (含图片复制) ************
      * =================================================================
      * 描述: 将源工作表的内容（包括单元格、样式、合并区域、列宽）复制到目标工作表。
-     *       注意：这仅复制可见内容和基本格式，不处理复杂的图表、图片、VBA等。
+     *       新增图片复制功能。
+     *       注意：这仅复制可见内容、基本格式、合并区域、列宽和图片。
+     *       不处理复杂的绘图对象（形状、文本框、图表）、评论、超链接、条件格式、数据验证等。
      * @param sourceSheet    源工作表对象
      * @param targetSheet    目标工作表对象
-     * @param targetWorkbook 目标工作簿对象 (用于在目标Workbook中创建新样式)
+     * @param targetWorkbook 目标工作簿对象 (用于在目标Workbook中创建新样式和图片数据)
      */
     private void copySheetContent(Sheet sourceSheet, Sheet targetSheet, Workbook targetWorkbook) {
-        // 复制列宽
+        // 1. 复制列宽
         // POI的列宽是按1/256个字符宽度计算的，默认列宽是8个字符宽
         // 这里的遍历需要小心，getLastCellNum() 是 Row 的方法，这里应该遍历Sheet的列
         // 可以尝试复制所有非空行的最大列数，或者更简单的，直接复制那些设置了自定义宽度的列
@@ -215,14 +228,14 @@ public class ReportGenerationService {
         targetSheet.setDefaultColumnWidth(sourceSheet.getDefaultColumnWidth());
 
 
-        // 复制合并区域
+        // 2. 复制合并区域
         for (int i = 0; i < sourceSheet.getNumMergedRegions(); i++) {
             CellRangeAddress mergedRegion = sourceSheet.getMergedRegion(i);
             // 直接添加到目标 Sheet 中，区域定义是相对的
             targetSheet.addMergedRegion(mergedRegion);
         }
 
-        // 遍历源工作表的行
+        // 3. 遍历源工作表的行和单元格，复制内容和样式
         for (int i = sourceSheet.getFirstRowNum(); i <= sourceSheet.getLastRowNum(); i++) {
             Row sourceRow = sourceSheet.getRow(i);
             if (sourceRow != null) {
@@ -232,8 +245,9 @@ public class ReportGenerationService {
                 targetRow.setHeight(sourceRow.getHeight());
 
                 // 遍历源行中的单元格
-                // *** 修正点：这里使用 sourceRow.getLastCellNum() ***
-                // getLastCellNum() 返回最后一个单元格索引 + 1
+                // getLastCellNum() 返回最后一个单元格索引 + 1 (如果行没有单元格则返回-1)
+                // 遍历到 < getLastCellNum() 是正确的范围
+                // 如果 getLastCellNum() 是 -1，循环条件 j < -1 不会成立，这也是正确的
                 for (int j = sourceRow.getFirstCellNum(); j < sourceRow.getLastCellNum(); j++) {
                     // getCell(j) 返回 null 如果单元格不存在，这是期望的行为
                     Cell sourceCell = sourceRow.getCell(j);
@@ -286,6 +300,7 @@ public class ReportGenerationService {
                         // 注意：不能直接使用源Workbook的CellStyle对象到目标Workbook，必须克隆
                         CellStyle sourceStyle = sourceCell.getCellStyle();
                         // 查找或创建一个匹配源样式的CellStyle，避免创建过多重复样式
+                        // 这里简化处理，直接创建新样式并克隆属性，如果性能是问题，可以实现样式缓存机制
                         CellStyle targetStyle = targetWorkbook.createCellStyle();
                         targetStyle.cloneStyleFrom(sourceStyle); // 克隆样式属性
                         targetCell.setCellStyle(targetStyle);
@@ -297,7 +312,62 @@ public class ReportGenerationService {
                 } // 单元格遍历结束
             } // 行非空检查结束
         } // 行遍历结束
+
+        // 4. 复制图片
+        XSSFDrawing sourceDrawing = (XSSFDrawing) sourceSheet.getDrawingPatriarch();
+        if (sourceDrawing != null) {
+            // 在目标 Sheet 中获取或创建绘图管理器
+            // XSSFSheet的createDrawingPatriarch()方法返回XSSFDrawing
+            XSSFDrawing targetDrawing = (XSSFDrawing) targetSheet.createDrawingPatriarch();
+
+            // 遍历源绘图中的所有形状
+            for (XSSFShape shape : sourceDrawing.getShapes()) {
+                // 检查形状是否是图片
+                if (shape instanceof XSSFPicture) {
+                    XSSFPicture sourcePicture = (XSSFPicture) shape;
+                    XSSFPictureData sourcePictureData = sourcePicture.getPictureData();
+                    org.apache.poi.xssf.usermodel.XSSFAnchor sourceAnchor = sourcePicture.getAnchor();
+
+                    // 复制锚点信息，创建一个新的 ClientAnchor
+                    // 这里的锚点类型需要与源锚点匹配，ClientAnchor是最常见的
+                    if (sourceAnchor instanceof XSSFClientAnchor) {
+                        XSSFClientAnchor sourceClientAnchor = (XSSFClientAnchor) sourceAnchor;
+                        // 创建目标 ClientAnchor，并复制属性
+                        // anchor(int dx1, int dy1, int dx2, int dy2, short col1, int row1, short col2, int row2)
+                        XSSFClientAnchor targetClientAnchor = new XSSFClientAnchor(
+                                sourceClientAnchor.getDx1(),
+                                sourceClientAnchor.getDy1(),
+                                sourceClientAnchor.getDx2(),
+                                sourceClientAnchor.getDy2(),
+                                sourceClientAnchor.getCol1(),
+                                sourceClientAnchor.getRow1(),
+                                sourceClientAnchor.getCol2(),
+                                sourceClientAnchor.getRow2()
+                        );
+                        // 复制图片比例属性
+                        targetClientAnchor.setAnchorType(sourceClientAnchor.getAnchorType());
+
+
+                        // 将源图片的原始字节数据添加到目标 Workbook 的图片集合中
+                        int targetPictureIndex = targetWorkbook.addPicture(
+                                sourcePictureData.getData(),
+                                sourcePictureData.getPictureType() // 复制图片类型 (PNG, JPEG等)
+                        );
+
+                        // 在目标绘图管理器中使用新的锚点和图片索引创建新的图片
+                        targetDrawing.createPicture(targetClientAnchor, targetPictureIndex);
+
+                    } else {
+                        // 如果是其他类型的锚点（例如 AbsoluteAnchor），此处不处理，可以添加警告
+                        System.err.println("Warning: Ignoring non-ClientAnchor picture in source sheet.");
+                    }
+                }
+                // TODO: 如果需要复制其他形状（文本框、简单图形等），需要在这里添加对应的 instanceof 检查和复制逻辑
+                // TODO: 复制图表非常复杂，通常不在此类简单复制方法中实现
+            }
+        } // sourceDrawing 非空检查结束
     }
+
 
     /*
      * =================================================================
@@ -399,7 +469,7 @@ public class ReportGenerationService {
             }
 
 
-            // 根据规则的源Key ([SN] 或 测试项名称) 从当前日志记录中查找对应的值
+            // 根据规则的源Key ([SN] 或 测试项名称) 从日志记录中查找对应的值
             Optional<String> valueToFillOpt = findValueForKey(sourceKey, record);
 
             // 如果找到了对应的值
