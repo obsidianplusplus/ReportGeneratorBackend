@@ -11,6 +11,7 @@
     <groupId>com.obsidian</groupId>
     <artifactId>report-generator-backend</artifactId>
     <version>0.0.1-SNAPSHOT</version>
+
     <name>ReportGeneratorBackend</name>
     <description>A dumb processor backend for generating reports using Apache POI.</description>
 
@@ -58,6 +59,7 @@
             <plugin>
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>
+                <version>3.2.5</version> <!-- 与parent版本保持一致 -->
                 <configuration>
                     <excludes>
                         <exclude>
@@ -66,6 +68,13 @@
                         </exclude>
                     </excludes>
                 </configuration>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>repackage</goal>
+                        </goals>
+                    </execution>
+                </executions>
             </plugin>
         </plugins>
     </build>
