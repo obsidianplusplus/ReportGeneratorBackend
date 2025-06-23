@@ -1,3 +1,4 @@
+// com/obsidian/reportgeneratorbackend/controller/ReportController.java
 package com.obsidian.reportgeneratorbackend.controller;
 
 import com.obsidian.reportgeneratorbackend.dto.ReportGenerationRequest;
@@ -21,7 +22,8 @@ import java.util.Date;
  */
 @RestController
 @RequestMapping("/api/reports") // 所有请求都以 /api/reports 为前缀
-@CrossOrigin(origins = "*") // 允许所有来源的跨域请求，在生产环境中应配置为前端的实际地址
+// 【核心修改】在 @CrossOrigin 注解中添加 exposedHeaders 属性
+@CrossOrigin(origins = "*", exposedHeaders = {"Content-Disposition"})
 public class ReportController {
 
     private final ReportGenerationService reportService;
@@ -51,8 +53,9 @@ public class ReportController {
             HttpHeaders headers = new HttpHeaders();
             String filename = generateFilename(request);
 
-            // 设置响应头，告知浏览器这是一个文件下载
-            headers.setContentDispositionFormData("attachment", URLEncoder.encode(filename, StandardCharsets.UTF_8));
+            // 【重要】设置响应头，告知浏览器这是一个文件下载
+            // 注意：这里需要对文件名进行URL编码，以支持中文等特殊字符
+            headers.setContentDispositionFormData("attachment", URLEncoder.encode(filename, StandardCharsets.UTF_8.name()));
 
             // 根据导出模式设置不同的MIME类型
             if (request.getExportMode() == com.obsidian.reportgeneratorbackend.model.ExportMode.ZIP_FILES) {
@@ -70,6 +73,7 @@ public class ReportController {
         } catch (Exception e) {
             // 处理其他未知错误
             e.printStackTrace();
+            // 建议将此处的 BAD_REQUEST 改为更具体的错误码或返回错误信息
             return new ResponseEntity<>(HttpStatus.BAD_REQUEST);
         }
     }
@@ -80,8 +84,9 @@ public class ReportController {
     private String generateFilename(ReportGenerationRequest request) {
         String timestamp = new SimpleDateFormat("yyyyMMdd_HHmmss").format(new Date());
         String baseName = "Generated_Report";
-        String extension = ".xlsx";
+        String extension = ".xlsx"; // 默认扩展名
 
+        // 【优化】使用 switch 表达式（Java 14+）或保持原样
         switch (request.getExportMode()) {
             case SINGLE_SHEET:
                 baseName = "Report_Single_Sheet";
@@ -91,7 +96,7 @@ public class ReportController {
                 break;
             case ZIP_FILES:
                 baseName = "Report_Archive";
-                extension = ".zip";
+                extension = ".zip"; // ZIP模式下，扩展名是.zip
                 break;
         }
         return baseName + "_" + timestamp + extension;

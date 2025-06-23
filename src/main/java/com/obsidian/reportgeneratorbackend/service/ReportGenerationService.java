@@ -3,15 +3,14 @@ package com.obsidian.reportgeneratorbackend.service;
 import com.obsidian.reportgeneratorbackend.dto.LogRecord;
 import com.obsidian.reportgeneratorbackend.dto.MappingRule;
 import com.obsidian.reportgeneratorbackend.dto.ReportGenerationRequest;
-import org.apache.poi.ss.usermodel.*; // 引入通配符以便使用CellType等
-import org.apache.poi.ss.util.CellRangeAddress; // 用于复制合并区域
-import org.apache.poi.xssf.usermodel.XSSFWorkbook; // 引入XSSFWorkbook
-import org.apache.poi.xssf.usermodel.XSSFDrawing; // 引入XSSFDrawing
-import org.apache.poi.xssf.usermodel.XSSFShape; // 引入XSSFShape
-import org.apache.poi.xssf.usermodel.XSSFPicture; // 引入XSSFPicture
-import org.apache.poi.xssf.usermodel.XSSFClientAnchor; // 引入XSSFClientAnchor
-import org.apache.poi.xssf.usermodel.XSSFPictureData; // 引入XSSFPictureData
-
+import org.apache.poi.ss.usermodel.*;
+import org.apache.poi.ss.util.CellRangeAddress;
+import org.apache.poi.xssf.usermodel.XSSFWorkbook;
+import org.apache.poi.xssf.usermodel.XSSFDrawing;
+import org.apache.poi.xssf.usermodel.XSSFShape;
+import org.apache.poi.xssf.usermodel.XSSFPicture;
+import org.apache.poi.xssf.usermodel.XSSFClientAnchor;
+import org.apache.poi.xssf.usermodel.XSSFPictureData;
 
 import org.springframework.stereotype.Service;
 
@@ -19,6 +18,9 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.util.Map;
 import java.util.Optional;
+// 新增的导入
+import java.util.HashSet;
+import java.util.Set;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
@@ -47,22 +49,16 @@ public class ReportGenerationService {
             throw new IllegalArgumentException("报告生成请求数据无效。");
         }
         if (templateBytes == null || templateBytes.length == 0) {
-            // 如果是ZIP模式，模板字节可能为空，但ZIP模式通常也需要模板结构
-            // 这里我们强制要求有模板，因为所有模式都基于模板填充
-            // 如果ZIP模式不需要模板，这块逻辑需要调整
             throw new IllegalArgumentException("Excel模板文件字节为空。");
         }
 
 
         switch (request.getExportMode()) {
             case SINGLE_SHEET:
-                // 调用已有的单表模式生成方法
                 return generateSingleSheetReport(request, templateBytes);
             case ZIP_FILES:
-                // 调用已有的ZIP文件模式生成方法
                 return generateZipFilesReport(request, templateBytes);
             case MULTI_SHEET:
-                // 调用新增的多工作簿模式生成方法
                 return generateMultiSheetReport(request, templateBytes);
             default:
                 throw new IllegalArgumentException("未知的导出模式: " + request.getExportMode());
@@ -74,114 +70,111 @@ public class ReportGenerationService {
      * 所有数据都填充到模板的第一个工作表中。
      */
     private byte[] generateSingleSheetReport(ReportGenerationRequest request, byte[] templateBytes) throws IOException {
-        // 使用 try-with-resources 确保 Workbook 和 OutputStream 被关闭
         try (XSSFWorkbook workbook = PoiHelper.createWorkbookFromTemplate(templateBytes);
              ByteArrayOutputStream baos = new ByteArrayOutputStream()) {
 
-            // 获取模板的第一个 Sheet，数据将填充到此 Sheet 中
             Sheet sheet = workbook.getSheetAt(0);
 
-            // 遍历前端提供的每条日志记录
             for (int i = 0; i < request.getLogData().size(); i++) {
                 LogRecord record = request.getLogData().get(i);
-                // 调用核心填充方法，传入记录索引作为列偏移
                 fillDataForRecord(sheet, request.getMappingRules(), record, i);
             }
 
-            // 将填充好数据的 Workbook 写入输出流
             workbook.write(baos);
             return baos.toByteArray();
         }
     }
 
     /*
+     * =================================================================
+     *  ************ 已修复和增强的ZIP文件模式实现 ************
+     * =================================================================
      * 生成“多文件ZIP包”模式的报告。
      * 每个日志记录都会生成一个独立的、基于模板填充的Excel文件，然后将它们压缩成一个ZIP文件。
+     *
+     * 【修复】新增了对重复SN的处理逻辑，防止ZipException。
+     * 【增强】新增了对SN中非法文件名字符的清理。
      */
     private byte[] generateZipFilesReport(ReportGenerationRequest request, byte[] templateBytes) throws IOException {
-        // 使用 try-with-resources 确保 ZipOutputStream 和其底层的 OutputStream 被关闭
         try (ByteArrayOutputStream zipBaos = new ByteArrayOutputStream();
              ZipOutputStream zos = new ZipOutputStream(zipBaos)) {
 
-            // 遍历前端提供的每条日志记录
+            // 用于跟踪已添加到ZIP中的文件名，以处理重复
+            final Set<String> usedEntryNames = new HashSet<>();
+
             for (LogRecord record : request.getLogData()) {
-                // 为每条记录创建一个独立的 Excel 文件
-                // 这里的逻辑是基于模板创建一个新的 Workbook，填充单条记录数据，然后写入 ZIP
                 try (XSSFWorkbook singleRecordWorkbook = PoiHelper.createWorkbookFromTemplate(templateBytes);
                      ByteArrayOutputStream singleExcelBaos = new ByteArrayOutputStream()) {
 
-                    // 获取新 Workbook 的第一个 Sheet
                     Sheet sheet = singleRecordWorkbook.getSheetAt(0);
-                    // 调用核心填充方法，ZIP模式下每条记录单独一个文件，没有列偏移，索引为0
                     fillDataForRecord(sheet, request.getMappingRules(), record, 0);
 
-                    // 将填充好数据的 Workbook 写入临时的 ByteArrayOutputStream
                     singleRecordWorkbook.write(singleExcelBaos);
 
-                    // 创建 Zip 条目，使用 SN 作为文件名，并确保扩展名为 .xlsx
-                    String entryName = Optional.ofNullable(record.getSn()).orElse("UnknownSN") + ".xlsx";
+                    // --- 增强的命名逻辑 ---
+                    // 1. 获取基础名称，处理SN为null的情况
+                    String baseName = Optional.ofNullable(record.getSn()).orElse("UnknownSN");
+                    // 2. 清理文件名中的非法字符
+                    String safeBaseName = baseName.replaceAll("[\\\\/:*?\"<>|]", "_");
+
+                    String entryName = safeBaseName + ".xlsx";
+                    int counter = 1;
+                    // 3. 【修复】检查文件名是否重复，如果重复则添加后缀，例如 "SN123 (1).xlsx"
+                    while (usedEntryNames.contains(entryName)) {
+                        entryName = safeBaseName + " (" + counter++ + ").xlsx";
+                    }
+                    usedEntryNames.add(entryName);
+                    // --- 命名逻辑结束 ---
+
                     ZipEntry zipEntry = new ZipEntry(entryName);
                     zos.putNextEntry(zipEntry);
-                    // 将临时的 ByteArrayOutputStream 内容写入 Zip 条目
                     zos.write(singleExcelBaos.toByteArray());
-                    zos.closeEntry(); // 关闭当前 Zip 条目
-                } // singleRecordWorkbook 和 singleExcelBaos 在此关闭
+                    zos.closeEntry();
+                }
             }
-            // 必须在返回前调用 finish() 完成 Zip 文件的构建，并关闭 ZipOutputStream
             zos.finish();
             zos.close();
 
-            // 返回完整的 Zip 文件字节数组
             return zipBaos.toByteArray();
-        } // zipBaos 和 zos 在此关闭
+        }
     }
 
+
     /*
-     * =================================================================
-     *  ************ 新增的多工作簿模式实现 ************
-     * =================================================================
      * 生成“多工作簿”模式的报告（实则为单个Excel文件内的多个Sheet）。
      * 为每条日志记录在新的Workbook中创建一个基于模板Sheet的副本，并填充数据。
      */
     private byte[] generateMultiSheetReport(ReportGenerationRequest request, byte[] templateBytes) throws IOException {
-        // 使用 try-with-resources 确保所有资源被关闭
-        try (XSSFWorkbook templateWorkbook = PoiHelper.createWorkbookFromTemplate(templateBytes); // 加载模板Workbook
-             XSSFWorkbook outputWorkbook = new XSSFWorkbook(); // 创建用于输出的新Workbook
-             ByteArrayOutputStream baos = new ByteArrayOutputStream()) { // 用于收集最终字节流
+        try (XSSFWorkbook templateWorkbook = PoiHelper.createWorkbookFromTemplate(templateBytes);
+             XSSFWorkbook outputWorkbook = new XSSFWorkbook();
+             ByteArrayOutputStream baos = new ByteArrayOutputStream()) {
 
-            // 获取模板Workbook的第一个Sheet作为复制源
             Sheet templateSheet = templateWorkbook.getSheetAt(0);
             if (templateSheet == null) {
                 throw new IOException("模板文件不包含任何工作表。");
             }
 
-            // 遍历前端提供的每条日志记录
             for (LogRecord record : request.getLogData()) {
-                // 使用 SN 作为新 Sheet 的名称，处理null值，POI会自动处理重复名称
                 String sheetName = Optional.ofNullable(record.getSn()).orElse("UnknownSN");
-                // 清理SN中的非法字符，以免POI报错
                 sheetName = sheetName.replaceAll("[\\\\/*?\\[\\]:]", "_");
                 if (sheetName.length() > 31) {
-                    sheetName = sheetName.substring(0, 31); // Sheet名称最大长度31
+                    sheetName = sheetName.substring(0, 31);
                 }
 
-                // 在输出Workbook中创建一个新的Sheet
+                // POI的createSheet方法会自动处理重名，例如将第二个重名Sheet命名为 "SheetName (2)"
                 Sheet newSheet = outputWorkbook.createSheet(sheetName);
 
-                // *** 关键步骤：将模板Sheet的内容复制到这个新的Sheet中 ***
                 copySheetContent(templateSheet, newSheet, outputWorkbook);
 
-                // *** 关键步骤：将当前日志记录的数据填充到这个新的（已复制模板结构的）Sheet中 ***
-                // 注意：这里调用的是 fillDataForRecordMultiSheet，它不应用记录索引的列偏移
                 fillDataForRecordMultiSheet(newSheet, request.getMappingRules(), record);
             }
 
-            // 将包含所有填充好Sheet的输出Workbook写入输出流
             outputWorkbook.write(baos);
             return baos.toByteArray();
-        } // 所有 try-with-resources 资源在此关闭
+        }
     }
 
+    // ... copySheetContent, fillDataForRecordMultiSheet, findValueForKey, fillDataForRecord 方法保持不变 ...
 
     /*
      * =================================================================
