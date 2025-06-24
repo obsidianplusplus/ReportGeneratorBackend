@@ -131,7 +131,7 @@ public class ReportGenerationService {
      *
      * 【核心重构】此方法现在会先按 SN 对所有日志记录进行分组聚合。
      *  - 每个唯一的 SN 将生成一个独立的 Sheet。
-     *  - 同一个 SN 下来自不同工位的数据，将被依次填充到该 SN 对应的 Sheet 的不同列上。
+     *  - 同一个 SN 下来自不同工位的数据，其测试项将被【合并】后填充到该 SN 对应的 Sheet 的【同一列】中。
      */
     private byte[] generateMultiSheetReport(ReportGenerationRequest request, byte[] templateBytes) throws IOException {
         // 1. 按 SN 对日志数据进行分组聚合
@@ -163,12 +163,20 @@ public class ReportGenerationService {
                 // 复制模板内容到新 Sheet
                 copySheetContent(templateSheet, newSheet, outputWorkbook);
 
-                // 4. 在这个新创建的 Sheet 内，依次填充该 SN 下的所有记录
-                for (int recordIndex = 0; recordIndex < recordsForThisSn.size(); recordIndex++) {
-                    LogRecord currentRecord = recordsForThisSn.get(recordIndex);
-                    // 调用 fillDataForRecord，它会根据 recordIndex 进行列偏移
-                    fillDataForRecord(newSheet, request.getMappingRules(), currentRecord, recordIndex);
-                }
+                // 4. 创建一个“合并后”的记录
+                LogRecord mergedRecord = new LogRecord();
+                mergedRecord.setSn(sn);
+
+                // 5. 将该SN下的所有记录的 detailedItems 合并到一个列表中
+                List<com.obsidian.reportgeneratorbackend.dto.DetailedItem> allItems = recordsForThisSn.stream()
+                        .filter(r -> r.getDetailedItems() != null)
+                        .flatMap(r -> r.getDetailedItems().stream())
+                        .collect(Collectors.toList());
+                mergedRecord.setDetailedItems(allItems);
+
+                // 6. 调用 fillDataForRecord，但只调用一次，并且 recordIndex 永远是 0
+                //    这意味着不再有列的偏移
+                fillDataForRecord(newSheet, request.getMappingRules(), mergedRecord, 0);
             }
 
             outputWorkbook.write(baos);
@@ -251,7 +259,7 @@ public class ReportGenerationService {
                 .map(item -> item.getActualValue())
                 .findFirst();
     }
-    
+
     /*
      * 描述: 将源工作表的内容（包括单元格、样式、合并区域、列宽、图片）复制到目标工作表。
      */
@@ -283,7 +291,7 @@ public class ReportGenerationService {
                     Cell sourceCell = sourceRow.getCell(j);
                     if (sourceCell != null) {
                         Cell targetCell = targetRow.createCell(j, sourceCell.getCellType());
-                        
+
                         switch (sourceCell.getCellType()) {
                             case STRING:
                                 targetCell.setCellValue(sourceCell.getStringCellValue());
