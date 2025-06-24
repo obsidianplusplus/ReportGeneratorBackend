@@ -86,34 +86,51 @@ public class ReportGenerationService {
 
     /*
      * 生成“多文件ZIP包”模式的报告。
-     * 每个日志记录都会生成一个独立的、基于模板填充的Excel文件，然后将它们压缩成一个ZIP文件。
+     *
+     * 【核心重构 V2】此方法现在的逻辑与 multi-sheet 模式保持一致。
+     *  - 先按 SN 对所有日志记录进行分组聚合。
+     *  - 每个唯一的 SN 将生成一个独立的、数据合并后的 Excel 文件。
+     *  - 所有生成的 Excel 文件被压缩成一个 ZIP 包。
      */
     private byte[] generateZipFilesReport(ReportGenerationRequest request, byte[] templateBytes) throws IOException {
+        // 1. 按 SN 对日志数据进行分组聚合
+        Map<String, List<LogRecord>> groupedBySn = request.getLogData().stream()
+                .filter(record -> record.getSn() != null && !record.getSn().isEmpty())
+                .collect(Collectors.groupingBy(LogRecord::getSn));
+
         try (ByteArrayOutputStream zipBaos = new ByteArrayOutputStream();
              ZipOutputStream zos = new ZipOutputStream(zipBaos)) {
 
-            final Set<String> usedEntryNames = new HashSet<>();
+            // 2. 遍历按 SN 分组后的 Map
+            for (Map.Entry<String, List<LogRecord>> entry : groupedBySn.entrySet()) {
+                String sn = entry.getKey();
+                List<LogRecord> recordsForThisSn = entry.getValue();
 
-            for (LogRecord record : request.getLogData()) {
+                // 3. 创建一个“合并后”的记录
+                LogRecord mergedRecord = new LogRecord();
+                mergedRecord.setSn(sn);
+
+                List<com.obsidian.reportgeneratorbackend.dto.DetailedItem> allItems = recordsForThisSn.stream()
+                        .filter(r -> r.getDetailedItems() != null)
+                        .flatMap(r -> r.getDetailedItems().stream())
+                        .collect(Collectors.toList());
+                mergedRecord.setDetailedItems(allItems);
+
+                // 4. 为这个合并后的记录生成一个独立的Excel文件（在内存中）
                 try (XSSFWorkbook singleRecordWorkbook = PoiHelper.createWorkbookFromTemplate(templateBytes);
                      ByteArrayOutputStream singleExcelBaos = new ByteArrayOutputStream()) {
 
                     Sheet sheet = singleRecordWorkbook.getSheetAt(0);
-                    fillDataForRecord(sheet, request.getMappingRules(), record, 0);
+
+                    // 5. 调用 fillDataForRecord，recordIndex 永远是 0，避免列偏移
+                    fillDataForRecord(sheet, request.getMappingRules(), mergedRecord, 0);
 
                     singleRecordWorkbook.write(singleExcelBaos);
 
-                    String baseName = Optional.ofNullable(record.getSn()).orElse("UnknownSN");
-                    String safeBaseName = baseName.replaceAll("[\\\\/:*?\"<>|]", "_");
-                    String entryName = safeBaseName + ".xlsx";
-                    int counter = 1;
-
-                    while (usedEntryNames.contains(entryName)) {
-                        entryName = safeBaseName + " (" + counter++ + ").xlsx";
-                    }
-                    usedEntryNames.add(entryName);
-
-                    ZipEntry zipEntry = new ZipEntry(entryName);
+                    // 6. 将生成的Excel文件字节添加到ZIP压缩包中
+                    // 文件名直接使用SN，因为分组后SN已是唯一的
+                    String safeSn = sn.replaceAll("[\\\\/:*?\"<>|]", "_");
+                    ZipEntry zipEntry = new ZipEntry(safeSn + ".xlsx");
                     zos.putNextEntry(zipEntry);
                     zos.write(singleExcelBaos.toByteArray());
                     zos.closeEntry();
@@ -129,7 +146,7 @@ public class ReportGenerationService {
     /*
      * 生成“多工作簿”模式的报告（实则为单个Excel文件内的多个Sheet）。
      *
-     * 【核心重构】此方法现在会先按 SN 对所有日志记录进行分组聚合。
+     * 【核心重构 V1】此方法现在会先按 SN 对所有日志记录进行分组聚合。
      *  - 每个唯一的 SN 将生成一个独立的 Sheet。
      *  - 同一个 SN 下来自不同工位的数据，其测试项将被【合并】后填充到该 SN 对应的 Sheet 的【同一列】中。
      */
