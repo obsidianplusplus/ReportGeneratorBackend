@@ -204,29 +204,41 @@ public class ReportGenerationService {
     /*
      * 描述: 核心的数据填充逻辑，将单条日志记录的数据根据映射规则填充到指定Sheet中，并应用记录索引的列偏移。
      */
-    private void fillDataForRecord(Sheet sheet, Map<String, MappingRule> mappingRules, LogRecord record, int recordIndex) {
-        mappingRules.forEach((sourceKey, rule) -> {
-            String[] addressParts = rule.getAddress().split("_");
-            if (addressParts.length != 2) {
-                System.err.println("警告: 无效的映射地址格式 '" + rule.getAddress() + "' 对于源 '" + sourceKey + "'。");
-                return;
-            }
-
-            int baseRow, baseCol;
-            try {
-                baseRow = Integer.parseInt(addressParts[0]);
-                baseCol = Integer.parseInt(addressParts[1]);
-            } catch (NumberFormatException e) {
-                System.err.println("警告: 映射地址中的行列索引不是有效的数字 '" + rule.getAddress() + "' 对于源 '" + sourceKey + "'。");
-                return;
-            }
-
+    private void fillDataForRecord(Sheet sheet, Map<String, List<MappingRule>> mappingRules, LogRecord record, int recordIndex) {
+        /*
+         * =================================================================
+         *  核心修改 (Backend)
+         * -----------------------------------------------------------------
+         *  由于 mappingRules 的值现在是 List<MappingRule>，我们需要增加一个
+         *  内层循环来遍历列表中的每一个规则。
+         * =================================================================
+         */
+        mappingRules.forEach((sourceKey, ruleList) -> { // 'rule' 变量现在是 'ruleList'
             Optional<String> valueToFillOpt = findValueForKey(sourceKey, record);
+
+            // 如果值存在，则遍历这个源key对应的所有映射规则
             valueToFillOpt.ifPresent(valueToFill -> {
-                String formattedValue = PoiHelper.formatValue(valueToFill, rule.getDecimals(), rule.getUnit());
-                int targetRow = baseRow;
-                int targetCol = baseCol + recordIndex;
-                PoiHelper.setCellValue(sheet, targetRow, targetCol, formattedValue);
+                ruleList.forEach(rule -> { // <-- 增加内层循环
+                    String[] addressParts = rule.getAddress().split("_");
+                    if (addressParts.length != 2) {
+                        System.err.println("警告: 无效的映射地址格式 '" + rule.getAddress() + "' 对于源 '" + sourceKey + "'。");
+                        return; // 在 forEach 中，这里的 return 相当于 continue
+                    }
+
+                    int baseRow, baseCol;
+                    try {
+                        baseRow = Integer.parseInt(addressParts[0]);
+                        baseCol = Integer.parseInt(addressParts[1]);
+                    } catch (NumberFormatException e) {
+                        System.err.println("警告: 映射地址中的行列索引不是有效的数字 '" + rule.getAddress() + "' 对于源 '" + sourceKey + "'。");
+                        return;
+                    }
+
+                    String formattedValue = PoiHelper.formatValue(valueToFill, rule.getDecimals(), rule.getUnit());
+                    int targetRow = baseRow;
+                    int targetCol = baseCol + recordIndex;
+                    PoiHelper.setCellValue(sheet, targetRow, targetCol, formattedValue);
+                });
             });
         });
     }

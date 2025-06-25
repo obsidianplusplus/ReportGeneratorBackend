@@ -23,7 +23,7 @@ public class ReportGenerationRequest {
      * - Key: 源数据项名称 (例如: "[SN] (序列号)", "电池电压")
      * - Value: 包含目标单元格地址等信息的规则对象
      */
-    private Map<String, MappingRule> mappingRules;
+    private Map<String, List<MappingRule>> mappingRules;
 
     /*
      * 从前端选中的、需要填充到报告中的日志数据记录列表。
