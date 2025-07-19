@@ -1,3 +1,4 @@
+// src/main/java/com/obsidian/reportgeneratorbackend/dto/ReportGenerationRequest.java
 package com.obsidian.reportgeneratorbackend.dto;
 
 import com.obsidian.reportgeneratorbackend.model.ExportMode;
@@ -19,11 +20,11 @@ public class ReportGenerationRequest {
     private ExportMode exportMode;
 
     /*
-     * 映射规则。
-     * - Key: 源数据项名称 (例如: "[SN] (序列号)", "电池电压")
-     * - Value: 包含目标单元格地址等信息的规则对象
+     * 【V9.0 更新】映射规则的数据结构已改变。
+     * - Key: 目标单元格地址 (例如: "4_2")
+     * - Value: 包含一个源规则列表的映射对象
      */
-    private Map<String, List<MappingRule>> mappingRules;
+    private Map<String, SingleCellMapping> mappingRules;
 
     /*
      * 从前端选中的、需要填充到报告中的日志数据记录列表。

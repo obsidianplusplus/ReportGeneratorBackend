@@ -1,7 +1,8 @@
+// src/main/java/com/obsidian/reportgeneratorbackend/service/ReportGenerationService.java
 package com.obsidian.reportgeneratorbackend.service;
 
 import com.obsidian.reportgeneratorbackend.dto.LogRecord;
-import com.obsidian.reportgeneratorbackend.dto.MappingRule;
+import com.obsidian.reportgeneratorbackend.dto.SingleCellMapping; // <-- Import a nova classe
 import com.obsidian.reportgeneratorbackend.dto.ReportGenerationRequest;
 import org.apache.poi.ss.usermodel.*;
 import org.apache.poi.ss.util.CellRangeAddress;
@@ -16,6 +17,7 @@ import org.springframework.stereotype.Service;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.util.ArrayList; // <-- Adicionar import
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -32,19 +34,9 @@ import java.util.zip.ZipOutputStream;
 @Service
 public class ReportGenerationService {
 
-    // 特殊的SN映射键，与前端保持一致
     private static final String SN_MAPPING_KEY = "[SN] (序列号)";
 
-    /*
-     * 主入口方法，根据不同的导出模式调用相应的处理函数。
-     * @param request       包含所有指令的请求对象
-     * @param templateBytes Excel模板文件的原始字节
-     * @return 生成的报告文件（单个Excel或Zip压缩包）的字节数组
-     * @throws IOException 如果在处理文件时发生IO错误
-     * @throws IllegalArgumentException 如果请求参数无效
-     */
     public byte[] generateReport(ReportGenerationRequest request, byte[] templateBytes) throws IOException {
-        // 校验必要参数
         if (request == null || request.getLogData() == null || request.getMappingRules() == null) {
             throw new IllegalArgumentException("报告生成请求数据无效。");
         }
@@ -64,10 +56,6 @@ public class ReportGenerationService {
         }
     }
 
-    /*
-     * 生成“单表合并”模式的报告。
-     * 所有数据都填充到模板的第一个工作表中。
-     */
     private byte[] generateSingleSheetReport(ReportGenerationRequest request, byte[] templateBytes) throws IOException {
         try (XSSFWorkbook workbook = PoiHelper.createWorkbookFromTemplate(templateBytes);
              ByteArrayOutputStream baos = new ByteArrayOutputStream()) {
@@ -84,16 +72,7 @@ public class ReportGenerationService {
         }
     }
 
-    /*
-     * 生成“多文件ZIP包”模式的报告。
-     *
-     * 【核心重构 V2】此方法现在的逻辑与 multi-sheet 模式保持一致。
-     *  - 先按 SN 对所有日志记录进行分组聚合。
-     *  - 每个唯一的 SN 将生成一个独立的、数据合并后的 Excel 文件。
-     *  - 所有生成的 Excel 文件被压缩成一个 ZIP 包。
-     */
     private byte[] generateZipFilesReport(ReportGenerationRequest request, byte[] templateBytes) throws IOException {
-        // 1. 按 SN 对日志数据进行分组聚合
         Map<String, List<LogRecord>> groupedBySn = request.getLogData().stream()
                 .filter(record -> record.getSn() != null && !record.getSn().isEmpty())
                 .collect(Collectors.groupingBy(LogRecord::getSn));
@@ -101,12 +80,10 @@ public class ReportGenerationService {
         try (ByteArrayOutputStream zipBaos = new ByteArrayOutputStream();
              ZipOutputStream zos = new ZipOutputStream(zipBaos)) {
 
-            // 2. 遍历按 SN 分组后的 Map
             for (Map.Entry<String, List<LogRecord>> entry : groupedBySn.entrySet()) {
                 String sn = entry.getKey();
                 List<LogRecord> recordsForThisSn = entry.getValue();
 
-                // 3. 创建一个“合并后”的记录
                 LogRecord mergedRecord = new LogRecord();
                 mergedRecord.setSn(sn);
 
@@ -116,19 +93,13 @@ public class ReportGenerationService {
                         .collect(Collectors.toList());
                 mergedRecord.setDetailedItems(allItems);
 
-                // 4. 为这个合并后的记录生成一个独立的Excel文件（在内存中）
                 try (XSSFWorkbook singleRecordWorkbook = PoiHelper.createWorkbookFromTemplate(templateBytes);
                      ByteArrayOutputStream singleExcelBaos = new ByteArrayOutputStream()) {
 
                     Sheet sheet = singleRecordWorkbook.getSheetAt(0);
-
-                    // 5. 调用 fillDataForRecord，recordIndex 永远是 0，避免列偏移
                     fillDataForRecord(sheet, request.getMappingRules(), mergedRecord, 0);
-
                     singleRecordWorkbook.write(singleExcelBaos);
 
-                    // 6. 将生成的Excel文件字节添加到ZIP压缩包中
-                    // 文件名直接使用SN，因为分组后SN已是唯一的
                     String safeSn = sn.replaceAll("[\\\\/:*?\"<>|]", "_");
                     ZipEntry zipEntry = new ZipEntry(safeSn + ".xlsx");
                     zos.putNextEntry(zipEntry);
@@ -143,15 +114,7 @@ public class ReportGenerationService {
         }
     }
 
-    /*
-     * 生成“多工作簿”模式的报告（实则为单个Excel文件内的多个Sheet）。
-     *
-     * 【核心重构 V1】此方法现在会先按 SN 对所有日志记录进行分组聚合。
-     *  - 每个唯一的 SN 将生成一个独立的 Sheet。
-     *  - 同一个 SN 下来自不同工位的数据，其测试项将被【合并】后填充到该 SN 对应的 Sheet 的【同一列】中。
-     */
     private byte[] generateMultiSheetReport(ReportGenerationRequest request, byte[] templateBytes) throws IOException {
-        // 1. 按 SN 对日志数据进行分组聚合
         Map<String, List<LogRecord>> groupedBySn = request.getLogData().stream()
                 .filter(record -> record.getSn() != null && !record.getSn().isEmpty())
                 .collect(Collectors.groupingBy(LogRecord::getSn));
@@ -165,34 +128,26 @@ public class ReportGenerationService {
                 throw new IOException("模板文件不包含任何工作表。");
             }
 
-            // 2. 遍历按 SN 分组后的 Map
             for (Map.Entry<String, List<LogRecord>> entry : groupedBySn.entrySet()) {
                 String sn = entry.getKey();
                 List<LogRecord> recordsForThisSn = entry.getValue();
 
-                // 3. 为每个唯一的 SN 创建一个 Sheet
                 String sheetName = sn.replaceAll("[\\\\/*?\\[\\]:]", "_");
                 if (sheetName.length() > 31) {
                     sheetName = sheetName.substring(0, 31);
                 }
                 Sheet newSheet = outputWorkbook.createSheet(sheetName);
-
-                // 复制模板内容到新 Sheet
                 copySheetContent(templateSheet, newSheet, outputWorkbook);
 
-                // 4. 创建一个“合并后”的记录
                 LogRecord mergedRecord = new LogRecord();
                 mergedRecord.setSn(sn);
 
-                // 5. 将该SN下的所有记录的 detailedItems 合并到一个列表中
                 List<com.obsidian.reportgeneratorbackend.dto.DetailedItem> allItems = recordsForThisSn.stream()
                         .filter(r -> r.getDetailedItems() != null)
                         .flatMap(r -> r.getDetailedItems().stream())
                         .collect(Collectors.toList());
                 mergedRecord.setDetailedItems(allItems);
 
-                // 6. 调用 fillDataForRecord，但只调用一次，并且 recordIndex 永远是 0
-                //    这意味着不再有列的偏移
                 fillDataForRecord(newSheet, request.getMappingRules(), mergedRecord, 0);
             }
 
@@ -202,80 +157,61 @@ public class ReportGenerationService {
     }
 
     /*
-     * 描述: 核心的数据填充逻辑，将单条日志记录的数据根据映射规则填充到指定Sheet中，并应用记录索引的列偏移。
+     * 描述: 【V9.0 重写】核心数据填充逻辑，支持多源到一格。
+     *       它遍历每个目标单元格，收集所有映射到此单元格的源的值，然后用 " / " 连接并填充。
      */
-    private void fillDataForRecord(Sheet sheet, Map<String, List<MappingRule>> mappingRules, LogRecord record, int recordIndex) {
-        /*
-         * =================================================================
-         *  核心修改 (Backend)
-         * -----------------------------------------------------------------
-         *  由于 mappingRules 的值现在是 List<MappingRule>，我们需要增加一个
-         *  内层循环来遍历列表中的每一个规则。
-         * =================================================================
-         */
-        mappingRules.forEach((sourceKey, ruleList) -> { // 'rule' 变量现在是 'ruleList'
-            Optional<String> valueToFillOpt = findValueForKey(sourceKey, record);
-
-            // 如果值存在，则遍历这个源key对应的所有映射规则
-            valueToFillOpt.ifPresent(valueToFill -> {
-                ruleList.forEach(rule -> { // <-- 增加内层循环
-                    String[] addressParts = rule.getAddress().split("_");
-                    if (addressParts.length != 2) {
-                        System.err.println("警告: 无效的映射地址格式 '" + rule.getAddress() + "' 对于源 '" + sourceKey + "'。");
-                        return; // 在 forEach 中，这里的 return 相当于 continue
-                    }
-
-                    int baseRow, baseCol;
-                    try {
-                        baseRow = Integer.parseInt(addressParts[0]);
-                        baseCol = Integer.parseInt(addressParts[1]);
-                    } catch (NumberFormatException e) {
-                        System.err.println("警告: 映射地址中的行列索引不是有效的数字 '" + rule.getAddress() + "' 对于源 '" + sourceKey + "'。");
-                        return;
-                    }
-
-                    String formattedValue = PoiHelper.formatValue(valueToFill, rule.getDecimals(), rule.getUnit());
-                    int targetRow = baseRow;
-                    int targetCol = baseCol + recordIndex;
-                    PoiHelper.setCellValue(sheet, targetRow, targetCol, formattedValue);
-                });
-            });
-        });
-    }
-
-    /*
-     * 描述: 辅助方法，将单条日志记录的数据根据映射规则填充到指定的Sheet中。
-     *       此方法用于多工作簿模式（原始版本，现已废弃，由聚合逻辑取代）。
-     *       保留此方法以供参考或未来可能的不同模式。
-     */
-    private void fillDataForRecordMultiSheet(Sheet sheet, Map<String, MappingRule> mappingRules, LogRecord record) {
-        mappingRules.forEach((sourceKey, rule) -> {
-            String[] addressParts = rule.getAddress().split("_");
+    private void fillDataForRecord(Sheet sheet, Map<String, SingleCellMapping> mappingRules, LogRecord record, int recordIndex) {
+        // 遍历每个映射的目标单元格地址
+        mappingRules.forEach((address, cellMapping) -> {
+            // 1. 解析地址
+            String[] addressParts = address.split("_");
             if (addressParts.length != 2) {
-                System.err.println("警告: 无效的映射地址格式 '" + rule.getAddress() + "' 对于源 '" + sourceKey + "'。");
-                return;
+                System.err.println("警告: 无效的映射地址格式 '" + address + "'。");
+                return; // continue
             }
 
-            int targetRow, targetCol;
+            int baseRow, baseCol;
             try {
-                targetRow = Integer.parseInt(addressParts[0]);
-                targetCol = Integer.parseInt(addressParts[1]);
+                baseRow = Integer.parseInt(addressParts[0]);
+                baseCol = Integer.parseInt(addressParts[1]);
             } catch (NumberFormatException e) {
-                System.err.println("警告: 映射地址中的行列索引不是有效的数字 '" + rule.getAddress() + "' 对于源 '" + sourceKey + "'。");
-                return;
+                System.err.println("警告: 映射地址中的行列索引不是有效的数字 '" + address + "'。");
+                return; // continue
             }
 
-            Optional<String> valueToFillOpt = findValueForKey(sourceKey, record);
-            valueToFillOpt.ifPresent(valueToFill -> {
-                String formattedValue = PoiHelper.formatValue(valueToFill, rule.getDecimals(), rule.getUnit());
-                PoiHelper.setCellValue(sheet, targetRow, targetCol, formattedValue);
-            });
+            // 2. 准备一个列表来收集该单元格所有源的格式化值
+            List<String> formattedValues = new ArrayList<>();
+
+            // 3. 遍历映射到此单元格的所有源规则
+            if (cellMapping != null && cellMapping.getSources() != null) {
+                cellMapping.getSources().forEach(sourceRule -> {
+                    // 4. 为每个源查找其值
+                    findValueForKey(sourceRule.getSourceKey(), record)
+                            .ifPresent(rawValue -> {
+                                // 5. 使用其独立的规则进行格式化
+                                String formattedValue = PoiHelper.formatValue(
+                                        rawValue,
+                                        sourceRule.getDecimals(),
+                                        sourceRule.getUnit()
+                                );
+                                formattedValues.add(formattedValue);
+                            });
+                });
+            }
+
+            // 6. 如果收集到了任何值，用 " / " 连接它们
+            if (!formattedValues.isEmpty()) {
+                String finalCellValue = String.join("/", formattedValues);
+
+                // 7. 计算最终的目标列（考虑单表模式的偏移）
+                int targetCol = baseCol + recordIndex;
+
+                // 8. 设置单元格的值
+                PoiHelper.setCellValue(sheet, baseRow, targetCol, finalCellValue);
+            }
         });
     }
 
-    /*
-     * 描述: 根据源Key从日志记录中查找对应的值。
-     */
     private Optional<String> findValueForKey(String sourceKey, LogRecord record) {
         if (SN_MAPPING_KEY.equals(sourceKey)) {
             return Optional.ofNullable(record.getSn());
@@ -289,9 +225,6 @@ public class ReportGenerationService {
                 .findFirst();
     }
 
-    /*
-     * 描述: 将源工作表的内容（包括单元格、样式、合并区域、列宽、图片）复制到目标工作表。
-     */
     private void copySheetContent(Sheet sourceSheet, Sheet targetSheet, Workbook targetWorkbook) {
         int maxCol = 0;
         for (int i = sourceSheet.getFirstRowNum(); i <= sourceSheet.getLastRowNum(); i++) {
