@@ -5,7 +5,7 @@
     <parent>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-starter-parent</artifactId>
-        <version>3.2.5</version> <!-- 您可以使用最新的稳定版 -->
+        <version>3.2.5</version>
         <relativePath/> <!-- lookup parent from repository -->
     </parent>
     <groupId>com.obsidian</groupId>
@@ -17,7 +17,7 @@
 
     <properties>
         <java.version>17</java.version>
-        <poi.version>5.2.5</poi.version> <!-- 使用较新的POI版本 -->
+        <poi.version>5.2.5</poi.version>
     </properties>
 
     <dependencies>
@@ -39,6 +39,17 @@
             <version>${poi.version}</version>
         </dependency>
 
+        <!-- ===================== 新增的核心依赖 ===================== -->
+        <!-- 这个依赖包含了完整的 OOXML 功能，如图表、加密等 -->
+        <!-- 它会传递性地依赖 poi-ooxml，所以原有的 poi-ooxml 可以保留也可以移除，但保留 poi-ooxml-full 是关键 -->
+        <dependency>
+            <groupId>org.apache.poi</groupId>
+            <artifactId>poi-ooxml-full</artifactId>
+            <version>${poi.version}</version>
+        </dependency>
+        <!-- ========================================================== -->
+
+
         <!-- Lombok: 简化JavaBean的编写，例如自动生成getter/setter -->
         <dependency>
             <groupId>org.projectlombok</groupId>
@@ -59,7 +70,7 @@
             <plugin>
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>
-                <version>3.2.5</version> <!-- 与parent版本保持一致 -->
+                <version>3.2.5</version>
                 <configuration>
                     <excludes>
                         <exclude>

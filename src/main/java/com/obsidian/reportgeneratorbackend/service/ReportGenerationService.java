@@ -1,40 +1,56 @@
-// src/main/java/com/obsidian/reportgeneratorbackend/service/ReportGenerationService.java
 package com.obsidian.reportgeneratorbackend.service;
 
-import com.obsidian.reportgeneratorbackend.dto.LogRecord;
-import com.obsidian.reportgeneratorbackend.dto.SingleCellMapping; // <-- Import a nova classe
-import com.obsidian.reportgeneratorbackend.dto.ReportGenerationRequest;
+import com.obsidian.reportgeneratorbackend.dto.*;
 import org.apache.poi.ss.usermodel.*;
 import org.apache.poi.ss.util.CellRangeAddress;
-import org.apache.poi.xssf.usermodel.XSSFWorkbook;
-import org.apache.poi.xssf.usermodel.XSSFDrawing;
-import org.apache.poi.xssf.usermodel.XSSFShape;
-import org.apache.poi.xssf.usermodel.XSSFPicture;
-import org.apache.poi.xssf.usermodel.XSSFClientAnchor;
-import org.apache.poi.xssf.usermodel.XSSFPictureData;
-
+import org.apache.poi.xddf.usermodel.chart.*;
+import org.apache.poi.xssf.usermodel.*;
 import org.springframework.stereotype.Service;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
-import java.util.ArrayList; // <-- Adicionar import
-import java.util.HashSet;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
-/*
- * 描述: 报告生成的核心服务类。
- *       它作为“哑处理器”，严格按照前端提供的指令执行操作。
- */
 @Service
 public class ReportGenerationService {
 
     private static final String SN_MAPPING_KEY = "[SN] (序列号)";
+
+    private static final Pattern NUMERIC_VALUE_PATTERN = Pattern.compile("^[\\-+]?(\\d*\\.?\\d+|\\d+\\.?\\d*)(e[+-]?\\d+)?");
+
+    private Optional<Double> extractNumericValue(Cell cell) {
+        if (cell == null) {
+            return Optional.empty();
+        }
+
+        if (cell.getCellType() == CellType.NUMERIC) {
+            return Optional.of(cell.getNumericCellValue());
+        }
+
+        if (cell.getCellType() == CellType.STRING) {
+            String cellValue = cell.getStringCellValue().trim();
+            Matcher matcher = NUMERIC_VALUE_PATTERN.matcher(cellValue);
+            if (matcher.find()) {
+                try {
+                    String numericPart = matcher.group();
+                    return Optional.of(Double.parseDouble(numericPart));
+                } catch (NumberFormatException e) {
+                    return Optional.empty();
+                }
+            }
+        }
+
+        return Optional.empty();
+    }
+
 
     public byte[] generateReport(ReportGenerationRequest request, byte[] templateBytes) throws IOException {
         if (request == null || request.getLogData() == null || request.getMappingRules() == null) {
@@ -55,6 +71,129 @@ public class ReportGenerationService {
                 throw new IllegalArgumentException("未知的导出模式: " + request.getExportMode());
         }
     }
+
+    public byte[] generateChartInExcel(byte[] excelFileBytes, ExcelChartRequest request) throws IOException {
+        if (excelFileBytes == null || excelFileBytes.length == 0) {
+            throw new IllegalArgumentException("Excel文件字节为空。");
+        }
+        if (request == null || request.getSeries() == null || request.getSeries().isEmpty()) {
+            throw new IllegalArgumentException("图表定义请求无效或未定义任何系列。");
+        }
+
+        try (XSSFWorkbook workbook = PoiHelper.createWorkbookFromTemplate(excelFileBytes);
+             ByteArrayOutputStream baos = new ByteArrayOutputStream()) {
+
+            addChartSheetFromSource(workbook, request);
+            workbook.write(baos);
+            return baos.toByteArray();
+        }
+    }
+
+
+    private void addChartSheetFromSource(XSSFWorkbook workbook, ExcelChartRequest request) {
+        XSSFSheet dataSheet = workbook.createSheet("ChartDataSource");
+        int maxDataPoints = 0;
+
+        for (int i = 0; i < request.getSeries().size(); i++) {
+            SeriesDefinitionExcel seriesDef = request.getSeries().get(i);
+
+            Row headerRow = dataSheet.getRow(0);
+            if (headerRow == null) {
+                headerRow = dataSheet.createRow(0);
+            }
+            headerRow.createCell(i).setCellValue(seriesDef.getName());
+
+            List<String> addresses = seriesDef.getDataAddresses();
+            if (addresses.size() > maxDataPoints) {
+                maxDataPoints = addresses.size();
+            }
+
+            // ======================= 核心修正点在这里 =======================
+            // 使用前端传来的工作表名称来获取正确的工作表
+            Sheet sourceSheet = workbook.getSheet(seriesDef.getSheetName());
+            if (sourceSheet == null) {
+                System.err.println("致命错误: 找不到名为 '" + seriesDef.getSheetName() + "' 的工作表。跳过此系列。");
+                continue; // 跳过这个系列的处理
+            }
+            // =============================================================
+
+            for (int j = 0; j < addresses.size(); j++) {
+                String address = addresses.get(j);
+                String[] parts = address.split("_");
+                int col = Integer.parseInt(parts[0]);
+                int row = Integer.parseInt(parts[1]);
+
+                Row sourceRow = sourceSheet.getRow(row);
+                if (sourceRow != null) {
+                    Cell sourceCell = sourceRow.getCell(col);
+                    Optional<Double> numericValue = extractNumericValue(sourceCell);
+
+                    if (numericValue.isPresent()) {
+                        Row dataRow = dataSheet.getRow(j + 1);
+                        if (dataRow == null) {
+                            dataRow = dataSheet.createRow(j + 1);
+                        }
+                        dataRow.createCell(i).setCellValue(numericValue.get());
+                    }
+                }
+            }
+        }
+
+        if (maxDataPoints == 0) {
+            workbook.removeSheetAt(workbook.getSheetIndex("ChartDataSource"));
+            return;
+        }
+
+        XSSFSheet xSheet = workbook.createSheet("XAxisSource");
+        for (int i = 0; i < maxDataPoints; i++) {
+            xSheet.createRow(i).createCell(0).setCellValue(i + 1);
+        }
+
+        XSSFSheet chartSheet = workbook.createSheet(request.getTitle());
+        XSSFDrawing drawing = chartSheet.createDrawingPatriarch();
+        XSSFClientAnchor anchor = drawing.createAnchor(0, 0, 0, 0, 1, 2, 20, 30);
+        XSSFChart chart = drawing.createChart(anchor);
+
+        chart.setTitleText(request.getTitle());
+        chart.setTitleOverlay(false);
+        XDDFChartLegend legend = chart.getOrAddLegend();
+        legend.setPosition(LegendPosition.TOP_RIGHT);
+
+        XDDFCategoryAxis bottomAxis = chart.createCategoryAxis(AxisPosition.BOTTOM);
+        bottomAxis.setTitle(request.getXAxisTitle());
+        XDDFValueAxis leftAxis = chart.createValueAxis(AxisPosition.LEFT);
+        leftAxis.setTitle(request.getYAxisTitle());
+
+        XDDFChartData data;
+        if ("line".equalsIgnoreCase(request.getChartType())) {
+            data = chart.createData(ChartTypes.LINE, bottomAxis, leftAxis);
+        } else {
+            data = chart.createData(ChartTypes.SCATTER, bottomAxis, leftAxis);
+        }
+
+        XDDFDataSource<Double> xs = XDDFDataSourcesFactory.fromNumericCellRange(xSheet, new CellRangeAddress(0, maxDataPoints - 1, 0, 0));
+
+        for (int i = 0; i < request.getSeries().size(); i++) {
+            XDDFNumericalDataSource<Double> ys = XDDFDataSourcesFactory.fromNumericCellRange(dataSheet, new CellRangeAddress(1, maxDataPoints, i, i));
+
+            XDDFChartData.Series series = data.addSeries(xs, ys);
+            series.setTitle(request.getSeries().get(i).getName(), null);
+
+            if(data instanceof XDDFScatterChartData) {
+                ((XDDFScatterChartData.Series)series).setMarkerStyle(MarkerStyle.CIRCLE);
+                ((XDDFScatterChartData.Series)series).setSmooth(false);
+            }
+            if(data instanceof XDDFLineChartData) {
+                ((XDDFLineChartData.Series)series).setSmooth(false);
+            }
+        }
+
+        chart.plot(data);
+
+        workbook.setSheetHidden(workbook.getSheetIndex(dataSheet), true);
+        workbook.setSheetHidden(workbook.getSheetIndex(xSheet), true);
+    }
+
 
     private byte[] generateSingleSheetReport(ReportGenerationRequest request, byte[] templateBytes) throws IOException {
         try (XSSFWorkbook workbook = PoiHelper.createWorkbookFromTemplate(templateBytes);
@@ -156,18 +295,12 @@ public class ReportGenerationService {
         }
     }
 
-    /*
-     * 描述: 【V9.0 重写】核心数据填充逻辑，支持多源到一格。
-     *       它遍历每个目标单元格，收集所有映射到此单元格的源的值，然后用 " / " 连接并填充。
-     */
     private void fillDataForRecord(Sheet sheet, Map<String, SingleCellMapping> mappingRules, LogRecord record, int recordIndex) {
-        // 遍历每个映射的目标单元格地址
         mappingRules.forEach((address, cellMapping) -> {
-            // 1. 解析地址
             String[] addressParts = address.split("_");
             if (addressParts.length != 2) {
                 System.err.println("警告: 无效的映射地址格式 '" + address + "'。");
-                return; // continue
+                return;
             }
 
             int baseRow, baseCol;
@@ -176,19 +309,15 @@ public class ReportGenerationService {
                 baseCol = Integer.parseInt(addressParts[1]);
             } catch (NumberFormatException e) {
                 System.err.println("警告: 映射地址中的行列索引不是有效的数字 '" + address + "'。");
-                return; // continue
+                return;
             }
 
-            // 2. 准备一个列表来收集该单元格所有源的格式化值
             List<String> formattedValues = new ArrayList<>();
 
-            // 3. 遍历映射到此单元格的所有源规则
             if (cellMapping != null && cellMapping.getSources() != null) {
                 cellMapping.getSources().forEach(sourceRule -> {
-                    // 4. 为每个源查找其值
                     findValueForKey(sourceRule.getSourceKey(), record)
                             .ifPresent(rawValue -> {
-                                // 5. 使用其独立的规则进行格式化
                                 String formattedValue = PoiHelper.formatValue(
                                         rawValue,
                                         sourceRule.getDecimals(),
@@ -199,14 +328,9 @@ public class ReportGenerationService {
                 });
             }
 
-            // 6. 如果收集到了任何值，用 " / " 连接它们
             if (!formattedValues.isEmpty()) {
                 String finalCellValue = String.join("/", formattedValues);
-
-                // 7. 计算最终的目标列（考虑单表模式的偏移）
                 int targetCol = baseCol + recordIndex;
-
-                // 8. 设置单元格的值
                 PoiHelper.setCellValue(sheet, baseRow, targetCol, finalCellValue);
             }
         });
