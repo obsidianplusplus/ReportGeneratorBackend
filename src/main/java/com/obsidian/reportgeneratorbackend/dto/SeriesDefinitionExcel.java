@@ -7,5 +7,6 @@ import java.util.List;
 public class SeriesDefinitionExcel {
     private String name;
     private List<String> dataAddresses;
-    private String sheetName; // 新增字段，用于指定数据源所在的工作表名称
+    private String sheetName;
+    private boolean isRange; // 新增字段，标记数据源是否为范围
 }
