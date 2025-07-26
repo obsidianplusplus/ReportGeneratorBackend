@@ -9,5 +9,6 @@ public class ExcelChartRequest {
     private String title;
     private String xAxisTitle;
     private String yAxisTitle;
+    private String outputMode; // 新增字段, e.g., "combined" or "separate"
     private List<SeriesDefinitionExcel> series;
 }
