@@ -26,12 +26,11 @@ public class ReportGenerationService {
     private static final String SN_MAPPING_KEY = "[SN] (序列号)";
     private static final Pattern NUMERIC_VALUE_PATTERN = Pattern.compile("^[\\-+]?(\\d*\\.?\\d+|\\d+\\.?\\d*)(e[+-]?\\d+)?");
 
-    // 图表布局常量
-    private static final int CHARTS_PER_ROW = 2; // 每行排列多少个图表
-    private static final int CHART_WIDTH = 10;   // 每个图表占用的列数
-    private static final int CHART_HEIGHT = 20;  // 每个图表占用的行数
-    private static final int CHART_PADDING_ROWS = 2; // 图表之间的垂直间距（行）
-    private static final int CHART_PADDING_COLS = 1; // 图表之间的水平间距（列）
+    private static final int CHARTS_PER_ROW = 2;
+    private static final int CHART_WIDTH = 10;
+    private static final int CHART_HEIGHT = 20;
+    private static final int CHART_PADDING_ROWS = 2;
+    private static final int CHART_PADDING_COLS = 1;
 
     private Optional<Double> extractNumericValue(Cell cell) {
         if (cell == null) return Optional.empty();
@@ -89,7 +88,12 @@ public class ReportGenerationService {
     }
 
     private void createCombinedChartSheet(XSSFWorkbook workbook, ExcelChartRequest request) {
-        XSSFSheet chartSheet = workbook.createSheet(request.getTitle());
+        String sheetName = request.getCombinedSheetName();
+        if (sheetName == null || sheetName.trim().isEmpty()) {
+            sheetName = "图表汇总";
+        }
+
+        XSSFSheet chartSheet = workbook.createSheet(sheetName.trim());
         XSSFDrawing drawing = chartSheet.createDrawingPatriarch();
         int chartCount = 0;
 
@@ -98,7 +102,6 @@ public class ReportGenerationService {
             if (dataPoints.isEmpty()) continue;
 
             String safeName = getSafeSheetName(seriesDef.getName());
-            // 为每个数据源工作表添加唯一后缀，防止重名
             String uniqueSuffix = safeName + "_" + chartCount;
             XSSFSheet dataSheet = workbook.createSheet("Data_" + uniqueSuffix);
             XSSFSheet xSheet = workbook.createSheet("XAxis_" + uniqueSuffix);
@@ -145,26 +148,19 @@ public class ReportGenerationService {
 
     private List<Double> extractDataPoints(XSSFWorkbook workbook, SeriesDefinitionExcel seriesDef) {
         List<Double> dataPoints = new ArrayList<>();
-        Sheet sourceSheet = workbook.getSheet(seriesDef.getSheetName());
-        if (sourceSheet == null) return dataPoints;
+        String sourceSheetName = seriesDef.getSheetName();
+        if (sourceSheetName == null || sourceSheetName.trim().isEmpty()) {
+            System.err.println("警告: 系列 '" + seriesDef.getName() + "' 未指定有效的工作表名称(sheetName)。");
+            return dataPoints;
+        }
 
-        if (seriesDef.isRange() && seriesDef.getDataAddresses().size() == 2) {
-            CellAddress start = new CellAddress(toExcelAddress(seriesDef.getDataAddresses().get(0)));
-            CellAddress end = new CellAddress(toExcelAddress(seriesDef.getDataAddresses().get(1)));
+        Sheet sourceSheet = workbook.getSheet(sourceSheetName);
+        if (sourceSheet == null) {
+            System.err.println("警告: 在工作簿中未找到名为 '" + sourceSheetName + "' 的工作表。");
+            return dataPoints;
+        }
 
-            int r_start = Math.min(start.getRow(), end.getRow());
-            int r_end = Math.max(start.getRow(), end.getRow());
-            int c_start = Math.min(start.getColumn(), end.getColumn());
-            int c_end = Math.max(start.getColumn(), end.getColumn());
-
-            for (int r = r_start; r <= r_end; r++) {
-                Row sourceRow = sourceSheet.getRow(r);
-                if (sourceRow == null) continue;
-                for (int c = c_start; c <= c_end; c++) {
-                    extractNumericValue(sourceRow.getCell(c)).ifPresent(dataPoints::add);
-                }
-            }
-        } else {
+        if (seriesDef.getDataAddresses() != null) {
             for (String address : seriesDef.getDataAddresses()) {
                 String[] parts = address.split("_");
                 int col = Integer.parseInt(parts[0]);
@@ -186,7 +182,6 @@ public class ReportGenerationService {
         chart.setTitleText(chartTitle);
         chart.setTitleOverlay(false);
 
-        // 只有在组合模式下才显示图例
         if (!"separate".equalsIgnoreCase(request.getOutputMode())) {
             XDDFChartLegend legend = chart.getOrAddLegend();
             legend.setPosition(LegendPosition.TOP_RIGHT);
@@ -212,7 +207,7 @@ public class ReportGenerationService {
 
     private String getSafeSheetName(String name) {
         String safeName = name.replaceAll("[\\\\/*?\\[\\]:]", "_").trim();
-        int maxLength = 31 - 15; // 预留 "Data_" 或 "Chart_" 和唯一后缀的空间
+        int maxLength = 31 - 15;
         if (safeName.length() > maxLength) safeName = safeName.substring(0, maxLength);
         return safeName;
     }
@@ -366,6 +361,63 @@ public class ReportGenerationService {
         for (int i = 0; i < sourceSheet.getNumMergedRegions(); i++) {
             targetSheet.addMergedRegion(sourceSheet.getMergedRegion(i));
         }
+
+        PrintSetup sourcePrintSetup = sourceSheet.getPrintSetup();
+        PrintSetup targetPrintSetup = targetSheet.getPrintSetup();
+        targetPrintSetup.setPaperSize(sourcePrintSetup.getPaperSize());
+        targetPrintSetup.setScale(sourcePrintSetup.getScale());
+        targetPrintSetup.setFitWidth(sourcePrintSetup.getFitWidth());
+        targetPrintSetup.setFitHeight(sourcePrintSetup.getFitHeight());
+        targetPrintSetup.setLandscape(sourcePrintSetup.getLandscape());
+        targetPrintSetup.setLeftToRight(sourcePrintSetup.getLeftToRight());
+        targetPrintSetup.setNoOrientation(sourcePrintSetup.getNoOrientation());
+        targetPrintSetup.setUsePage(sourcePrintSetup.getUsePage());
+        targetPrintSetup.setHResolution(sourcePrintSetup.getHResolution());
+        targetPrintSetup.setVResolution(sourcePrintSetup.getVResolution());
+        targetPrintSetup.setHeaderMargin(sourcePrintSetup.getHeaderMargin());
+        targetPrintSetup.setFooterMargin(sourcePrintSetup.getFooterMargin());
+        targetPrintSetup.setCopies(sourcePrintSetup.getCopies());
+
+        targetSheet.setMargin(Sheet.TopMargin, sourceSheet.getMargin(Sheet.TopMargin));
+        targetSheet.setMargin(Sheet.BottomMargin, sourceSheet.getMargin(Sheet.BottomMargin));
+        targetSheet.setMargin(Sheet.LeftMargin, sourceSheet.getMargin(Sheet.LeftMargin));
+        targetSheet.setMargin(Sheet.RightMargin, sourceSheet.getMargin(Sheet.RightMargin));
+
+        if (sourceSheet.getHeader() != null) {
+            targetSheet.getHeader().setCenter(sourceSheet.getHeader().getCenter());
+            targetSheet.getHeader().setLeft(sourceSheet.getHeader().getLeft());
+            targetSheet.getHeader().setRight(sourceSheet.getHeader().getRight());
+        }
+        if (sourceSheet.getFooter() != null) {
+            targetSheet.getFooter().setCenter(sourceSheet.getFooter().getCenter());
+            targetSheet.getFooter().setLeft(sourceSheet.getFooter().getLeft());
+            targetSheet.getFooter().setRight(sourceSheet.getFooter().getRight());
+        }
+
+        if (sourceSheet instanceof XSSFSheet && targetSheet instanceof XSSFSheet) {
+            XSSFSheet xssfSourceSheet = (XSSFSheet) sourceSheet;
+            XSSFSheet xssfTargetSheet = (XSSFSheet) targetSheet;
+
+            int sourceSheetIndex = sourceSheet.getWorkbook().getSheetIndex(sourceSheet);
+            String printArea = sourceSheet.getWorkbook().getPrintArea(sourceSheetIndex);
+            if(printArea != null) {
+                targetSheet.getWorkbook().setPrintArea(
+                        targetSheet.getWorkbook().getSheetIndex(targetSheet),
+                        printArea.substring(printArea.indexOf('!')+1)
+                );
+            }
+
+            CellRangeAddress repeatingRows = xssfSourceSheet.getRepeatingRows();
+            if (repeatingRows != null) {
+                xssfTargetSheet.setRepeatingRows(repeatingRows);
+            }
+
+            CellRangeAddress repeatingCols = xssfSourceSheet.getRepeatingColumns();
+            if (repeatingCols != null) {
+                xssfTargetSheet.setRepeatingColumns(repeatingCols);
+            }
+        }
+
         for (int i = sourceSheet.getFirstRowNum(); i <= sourceSheet.getLastRowNum(); i++) {
             Row sourceRow = sourceSheet.getRow(i);
             if (sourceRow != null) {
@@ -399,6 +451,7 @@ public class ReportGenerationService {
                 }
             }
         }
+
         if (sourceSheet.getDrawingPatriarch() instanceof XSSFDrawing) {
             XSSFDrawing sourceDrawing = (XSSFDrawing) sourceSheet.getDrawingPatriarch();
             XSSFDrawing targetDrawing = (XSSFDrawing) targetSheet.createDrawingPatriarch();

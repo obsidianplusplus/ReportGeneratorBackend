@@ -9,6 +9,10 @@ public class ExcelChartRequest {
     private String title;
     private String xAxisTitle;
     private String yAxisTitle;
-    private String outputMode; // 新增字段, e.g., "combined" or "separate"
+    private String outputMode;
+
+    // [核心修改] 新增此字段以接收前端传来的自定义工作表名称
+    private String combinedSheetName;
+
     private List<SeriesDefinitionExcel> series;
 }
