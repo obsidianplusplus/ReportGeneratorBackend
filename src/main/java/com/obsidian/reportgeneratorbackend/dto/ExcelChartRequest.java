@@ -10,9 +10,9 @@ public class ExcelChartRequest {
     private String xAxisTitle;
     private String yAxisTitle;
     private String outputMode;
-
-    // [核心修改] 新增此字段以接收前端传来的自定义工作表名称
     private String combinedSheetName;
-
     private List<SeriesDefinitionExcel> series;
+
+    // [修改后] 新增此字段以接收前端的指令
+    private boolean showMinMax;
 }
