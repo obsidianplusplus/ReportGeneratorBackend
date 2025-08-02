@@ -10,11 +10,13 @@ import org.springframework.stereotype.Service;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.text.DecimalFormat;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
@@ -32,6 +34,31 @@ public class ReportGenerationService {
     private static final int CHART_HEIGHT = 20;
     private static final int CHART_PADDING_ROWS = 2;
     private static final int CHART_PADDING_COLS = 1;
+
+    private Optional<CustomSourceItem> findCustomItemByName(String name, List<CustomSourceItem> items) {
+        if (items == null || name == null) {
+            return Optional.empty();
+        }
+        return items.stream().filter(item -> name.equals(item.getName())).findFirst();
+    }
+
+    private Optional<String> generateValueFromCustomItem(CustomSourceItem item) {
+        if ("static".equals(item.getType())) {
+            return Optional.ofNullable(item.getValue());
+        }
+        if ("random".equals(item.getType())) {
+            if (item.getMin() == null || item.getMax() == null || item.getDecimals() == null) {
+                return Optional.empty();
+            }
+            double randomValue = ThreadLocalRandom.current().nextDouble(item.getMin(), item.getMax());
+            String pattern = "0." + String.join("", Collections.nCopies(item.getDecimals(), "0"));
+            if (item.getDecimals() == 0) pattern = "0";
+            DecimalFormat df = new DecimalFormat(pattern);
+            return Optional.of(df.format(randomValue));
+        }
+        return Optional.empty();
+    }
+
 
     private Optional<Double> extractNumericValue(Cell cell) {
         if (cell == null) return Optional.empty();
@@ -51,12 +78,18 @@ public class ReportGenerationService {
     }
 
     public byte[] generateReport(ReportGenerationRequest request, byte[] templateBytes) throws IOException {
-        if (request == null || request.getLogData() == null || request.getMappingRules() == null) {
+        if (request == null || (request.getLogData() == null && request.getCustomSourceItems() == null) || request.getMappingRules() == null) {
             throw new IllegalArgumentException("报告生成请求数据无效。");
         }
         if (templateBytes == null || templateBytes.length == 0) {
             throw new IllegalArgumentException("Excel模板文件字节为空。");
         }
+
+        // 如果没有日志数据，但有自定义数据，则创建一个虚拟的LogRecord来触发循环
+        if (request.getLogData() == null || request.getLogData().isEmpty()) {
+            request.setLogData(Collections.singletonList(new LogRecord()));
+        }
+
         switch (request.getExportMode()) {
             case SINGLE_SHEET:
                 return generateSingleSheetReport(request, templateBytes);
@@ -88,7 +121,6 @@ public class ReportGenerationService {
         }
     }
 
-    // [修改后] 新增的辅助方法
     private CellStyle createBoldStyle(XSSFWorkbook workbook) {
         CellStyle style = workbook.createCellStyle();
         Font font = workbook.createFont();
@@ -107,7 +139,6 @@ public class ReportGenerationService {
         XSSFDrawing drawing = chartSheet.createDrawingPatriarch();
         int chartCount = 0;
 
-        // [修改后] 创建一次样式以复用
         CellStyle boldStyle = createBoldStyle(workbook);
 
         for (SeriesDefinitionExcel seriesDef : request.getSeries()) {
@@ -127,7 +158,6 @@ public class ReportGenerationService {
             int rowNum = (chartCount / CHARTS_PER_ROW) * (CHART_HEIGHT + CHART_PADDING_ROWS) + CHART_PADDING_ROWS;
             int colNum = (chartCount % CHARTS_PER_ROW) * (CHART_WIDTH + CHART_PADDING_COLS) + CHART_PADDING_COLS;
 
-            // [修改后] 写入最大/最小值
             if (request.isShowMinMax() && !dataPoints.isEmpty()) {
                 int statsLabelCol = colNum;
                 int statsValueCol = colNum + 1;
@@ -163,7 +193,6 @@ public class ReportGenerationService {
         List<Double> dataPoints = extractDataPoints(workbook, seriesDef);
         if (dataPoints.isEmpty()) return;
 
-        // [修改后] 创建粗体样式
         CellStyle boldStyle = createBoldStyle(workbook);
 
         String safeName = getSafeSheetName(seriesDef.getName());
@@ -179,7 +208,6 @@ public class ReportGenerationService {
         XSSFDrawing drawing = chartSheet.createDrawingPatriarch();
         XSSFClientAnchor anchor = drawing.createAnchor(0, 0, 0, 0, 1, 2, 15, 32);
 
-        // [修改后] 写入最大/最小值
         if (request.isShowMinMax() && !dataPoints.isEmpty()) {
             int anchorStartRow = anchor.getRow1();
             int statsLabelCol = anchor.getCol1();
@@ -297,7 +325,7 @@ public class ReportGenerationService {
             Sheet sheet = workbook.getSheetAt(0);
             for (int i = 0; i < request.getLogData().size(); i++) {
                 LogRecord record = request.getLogData().get(i);
-                fillDataForRecord(sheet, request.getMappingRules(), record, i);
+                fillDataForRecord(sheet, request, record, i);
             }
             workbook.write(baos);
             return baos.toByteArray();
@@ -325,7 +353,7 @@ public class ReportGenerationService {
                 try (XSSFWorkbook singleRecordWorkbook = PoiHelper.createWorkbookFromTemplate(templateBytes);
                      ByteArrayOutputStream singleExcelBaos = new ByteArrayOutputStream()) {
                     Sheet sheet = singleRecordWorkbook.getSheetAt(0);
-                    fillDataForRecord(sheet, request.getMappingRules(), mergedRecord, 0);
+                    fillDataForRecord(sheet, request, mergedRecord, 0);
                     singleRecordWorkbook.write(singleExcelBaos);
                     String safeSn = sn.replaceAll("[\\\\/:*?\"<>|]", "_");
                     ZipEntry zipEntry = new ZipEntry(safeSn + ".xlsx");
@@ -364,14 +392,16 @@ public class ReportGenerationService {
                         .flatMap(r -> r.getDetailedItems().stream())
                         .collect(Collectors.toList());
                 mergedRecord.setDetailedItems(allItems);
-                fillDataForRecord(newSheet, request.getMappingRules(), mergedRecord, 0);
+                fillDataForRecord(newSheet, request, mergedRecord, 0);
             }
             outputWorkbook.write(baos);
             return baos.toByteArray();
         }
     }
 
-    private void fillDataForRecord(Sheet sheet, Map<String, SingleCellMapping> mappingRules, LogRecord record, int recordIndex) {
+    private void fillDataForRecord(Sheet sheet, ReportGenerationRequest request, LogRecord record, int recordIndex) {
+        Map<String, SingleCellMapping> mappingRules = request.getMappingRules();
+
         mappingRules.forEach((address, cellMapping) -> {
             String[] addressParts = address.split("_");
             if (addressParts.length != 2) return;
@@ -385,15 +415,24 @@ public class ReportGenerationService {
             List<String> formattedValues = new ArrayList<>();
             if (cellMapping != null && cellMapping.getSources() != null) {
                 cellMapping.getSources().forEach(sourceRule -> {
-                    findValueForKey(sourceRule.getSourceKey(), record)
-                            .ifPresent(rawValue -> {
-                                String formattedValue = PoiHelper.formatValue(
-                                        rawValue,
-                                        sourceRule.getDecimals(),
-                                        sourceRule.getUnit()
-                                );
-                                formattedValues.add(formattedValue);
-                            });
+
+                    Optional<String> maybeValue;
+                    Optional<CustomSourceItem> maybeCustom = findCustomItemByName(sourceRule.getSourceKey(), request.getCustomSourceItems());
+
+                    if (maybeCustom.isPresent()) {
+                        maybeValue = generateValueFromCustomItem(maybeCustom.get());
+                    } else {
+                        maybeValue = findValueInLogRecord(sourceRule.getSourceKey(), record);
+                    }
+
+                    maybeValue.ifPresent(rawValue -> {
+                        String formattedValue = PoiHelper.formatValue(
+                                rawValue,
+                                sourceRule.getDecimals(),
+                                sourceRule.getUnit()
+                        );
+                        formattedValues.add(formattedValue);
+                    });
                 });
             }
             if (!formattedValues.isEmpty()) {
@@ -404,7 +443,7 @@ public class ReportGenerationService {
         });
     }
 
-    private Optional<String> findValueForKey(String sourceKey, LogRecord record) {
+    private Optional<String> findValueInLogRecord(String sourceKey, LogRecord record) {
         if (SN_MAPPING_KEY.equals(sourceKey)) return Optional.ofNullable(record.getSn());
         if (record.getDetailedItems() == null) return Optional.empty();
         return record.getDetailedItems().stream()
