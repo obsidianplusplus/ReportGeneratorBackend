@@ -196,7 +196,25 @@ public class ReportGenerationService {
             int colNum = (chartCount % CHARTS_PER_ROW) * (CHART_WIDTH + CHART_PADDING_COLS) + CHART_PADDING_COLS;
 
             if (request.isShowMinMax() && !dataPoints.isEmpty()) {
-                // ... (这部分代码没有问题，保持原样)
+                int statsLabelCol = colNum;
+                int statsValueCol = colNum + 1;
+                int maxValueRow = rowNum - 2;
+                int minValueRow = rowNum - 1;
+
+                if (maxValueRow >= 0) {
+                    Row maxRow = chartSheet.getRow(maxValueRow) == null ? chartSheet.createRow(maxValueRow) : chartSheet.getRow(maxValueRow);
+                    Cell maxLabelCell = maxRow.createCell(statsLabelCol);
+                    maxLabelCell.setCellValue("最大值:");
+                    maxLabelCell.setCellStyle(boldStyle);
+                    maxRow.createCell(statsValueCol).setCellValue(Collections.max(dataPoints));
+                }
+                if (minValueRow >= 0) {
+                    Row minRow = chartSheet.getRow(minValueRow) == null ? chartSheet.createRow(minValueRow) : chartSheet.getRow(minValueRow);
+                    Cell minLabelCell = minRow.createCell(statsLabelCol);
+                    minLabelCell.setCellValue("最小值:");
+                    minLabelCell.setCellStyle(boldStyle);
+                    minRow.createCell(statsValueCol).setCellValue(Collections.min(dataPoints));
+                }
             }
 
             XSSFClientAnchor anchor = drawing.createAnchor(0, 0, 0, 0, colNum, rowNum, colNum + CHART_WIDTH, rowNum + CHART_HEIGHT);
@@ -247,7 +265,27 @@ public class ReportGenerationService {
         XSSFClientAnchor anchor = drawing.createAnchor(0, 0, 0, 0, 1, 2, 15, 32);
 
         if (request.isShowMinMax() && !dataPoints.isEmpty()) {
-            // ... (这部分代码没有问题，保持原样)
+            int anchorStartRow = anchor.getRow1();
+            int statsLabelCol = anchor.getCol1();
+            int statsValueCol = anchor.getCol1() + 1;
+
+            int maxValueRow = anchorStartRow - 2;
+            int minValueRow = anchorStartRow - 1;
+
+            if (maxValueRow >= 0) {
+                Row maxRow = chartSheet.createRow(maxValueRow);
+                Cell maxLabelCell = maxRow.createCell(statsLabelCol);
+                maxLabelCell.setCellValue("最大值:");
+                maxLabelCell.setCellStyle(boldStyle);
+                maxRow.createCell(statsValueCol).setCellValue(Collections.max(dataPoints));
+            }
+            if (minValueRow >= 0) {
+                Row minRow = chartSheet.createRow(minValueRow);
+                Cell minLabelCell = minRow.createCell(statsLabelCol);
+                minLabelCell.setCellValue("最小值:");
+                minLabelCell.setCellStyle(boldStyle);
+                minRow.createCell(statsValueCol).setCellValue(Collections.min(dataPoints));
+            }
         }
 
         createChartObject(chartSheet, anchor, request, seriesDef, dataSheet, xSheet, dataPoints.size(), uniqueSuffix);
