@@ -659,12 +659,19 @@ public class ReportGenerationService {
             XSSFDrawing targetDrawing = (XSSFDrawing) targetSheet.createDrawingPatriarch();
             for (XSSFShape shape : sourceDrawing.getShapes()) {
                 if (shape instanceof XSSFPicture) {
-                    XSSFPicture sourcePicture = (XSSFPicture) shape;
-                    XSSFPictureData sourcePictureData = sourcePicture.getPictureData();
-                    if (sourcePicture.getAnchor() instanceof XSSFClientAnchor) {
-                        XSSFClientAnchor sourceClientAnchor = (XSSFClientAnchor) sourcePicture.getAnchor();
-                        int targetPictureIndex = targetWorkbook.addPicture(sourcePictureData.getData(), sourcePictureData.getPictureType());
-                        targetDrawing.createPicture(sourceClientAnchor, targetPictureIndex);
+                    try {
+                        XSSFPicture sourcePicture = (XSSFPicture) shape;
+                        XSSFPictureData sourcePictureData = sourcePicture.getPictureData();
+
+                        if (sourcePictureData != null && sourcePicture.getAnchor() instanceof XSSFClientAnchor) {
+                            XSSFClientAnchor sourceClientAnchor = (XSSFClientAnchor) sourcePicture.getAnchor();
+                            int targetPictureIndex = targetWorkbook.addPicture(sourcePictureData.getData(), sourcePictureData.getPictureType());
+                            targetDrawing.createPicture(sourceClientAnchor, targetPictureIndex);
+                        } else {
+                            System.err.println("[JAVA WARNING] A picture in the template could not be copied due to missing picture data or anchor information.");
+                        }
+                    } catch (Exception e) {
+                        System.err.println("[JAVA WARNING] Failed to copy a picture from the template. It might be corrupted. Skipping it. Error: " + e.getMessage());
                     }
                 }
             }
